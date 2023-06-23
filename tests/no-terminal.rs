@@ -45,15 +45,15 @@ fn can_read_from_redirected_input_many_times() {
     let mut reader_crlf = mock_input_crlf();
 
     let response = crate::read_password_from_bufread(&mut reader_crlf).unwrap();
-    assert_eq!(response, "A mocked response.");
+    assert_eq!(response, "A mocked response.".into());
     let response = crate::read_password_from_bufread(&mut reader_crlf).unwrap();
-    assert_eq!(response, "Another mocked response.");
+    assert_eq!(response, "Another mocked response.".into());
 
     let mut reader_lf = mock_input_lf();
     let response = crate::read_password_from_bufread(&mut reader_lf).unwrap();
-    assert_eq!(response, "A mocked response.");
+    assert_eq!(response, "A mocked response.".into());
     let response = crate::read_password_from_bufread(&mut reader_lf).unwrap();
-    assert_eq!(response, "Another mocked response.");
+    assert_eq!(response, "Another mocked response.".into());
 }
 
 #[test]
@@ -62,9 +62,9 @@ fn can_read_from_input_ctrl_u() {
 
     let mut reader_ctrl_u = Cursor::new(&b"A mocked response.Another mocked response.\n"[..]);
     let response = crate::read_password_from_bufread(&mut reader_ctrl_u).unwrap();
-    assert_eq!(response, "Another mocked response.");
+    assert_eq!(response, "Another mocked response.".into());
 
     let mut reader_ctrl_u_at_end = Cursor::new(&b"A mocked response.\n"[..]);
     let response = crate::read_password_from_bufread(&mut reader_ctrl_u_at_end).unwrap();
-    assert_eq!(response, "");
+    assert_eq!(response, "".into());
 }

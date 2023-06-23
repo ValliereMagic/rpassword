@@ -1,16 +1,16 @@
-//! This library makes it easy to read passwords in a console application on all platforms, Unix,
-//! Windows, WASM, etc.
+//! This library makes it easy to read passwords in a console application on Unix,
+//! Windows
 //!
 //! Here's how you can read a password:
 //! ```no_run
 //! let password = rpassword::read_password().unwrap();
-//! println!("Your password is {}", password);
+//! println!("Your password is {}", password.into_inner());
 //! ```
 //!
 //! You can also prompt for a password:
 //! ```no_run
 //! let password = rpassword::prompt_password("Your password: ").unwrap();
-//! println!("Your password is {}", password);
+//! println!("Your password is {}", password.into_inner());
 //! ```
 //!
 //! Finally, in unit tests, you might want to pass a `Cursor`, which implements `BufRead`. In that
@@ -20,45 +20,52 @@
 //!
 //! let mut mock_input = Cursor::new("my-password\n".as_bytes().to_owned());
 //! let password = rpassword::read_password_from_bufread(&mut mock_input).unwrap();
-//! println!("Your password is {}", password);
+//! println!("Your password is {}", password.into_inner());
 //!
 //! let mut mock_input = Cursor::new("my-password\n".as_bytes().to_owned());
 //! let mut mock_output = Cursor::new(Vec::new());
 //! let password = rpassword::prompt_password_from_bufread(&mut mock_input, &mut mock_output, "Your password: ").unwrap();
-//! println!("Your password is {}", password);
+//! println!("Your password is {}", password.into_inner());
 //! ```
 
-use rtoolbox::fix_line_issues::fix_line_issues;
 use rtoolbox::print_tty::{print_tty, print_writer};
 use rtoolbox::safe_string::SafeString;
 use std::io::{BufRead, Write};
 
-#[cfg(target_family = "wasm")]
-mod wasm {
-    use std::io::{self, BufRead};
-
-    /// Reads a password from the TTY
-    pub fn read_password() -> std::io::Result<String> {
-        let tty = std::fs::File::open("/dev/tty")?;
-        let mut reader = io::BufReader::new(tty);
-
-        read_password_from_fd_with_hidden_input(&mut reader)
+/// Normalizes the return of `read_line()` in the context of a CLI application
+pub fn sanitize_password(line: &mut SafeString) -> std::io::Result<()> {
+    if !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "unexpected end of file",
+        ));
     }
 
-    /// Reads a password from a given file descriptor
-    fn read_password_from_fd_with_hidden_input(
-        reader: &mut impl BufRead,
-    ) -> std::io::Result<String> {
-        let mut password = super::SafeString::new();
+    // Remove the \n from the line.
+    line.pop();
 
-        reader.read_line(&mut password)?;
-        super::fix_line_issues(password.into_inner())
+    // Remove the \r from the line if present
+    if line.ends_with('\r') {
+        line.pop();
     }
+
+    // Ctrl-U should remove the line in terminals
+    if line.contains('') {
+        match line.rfind('') {
+            Some(last_ctrl_u_index) => {
+                line.replace_range(..last_ctrl_u_index + 1, "");
+            }
+            None => (),
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(target_family = "unix")]
 mod unix {
     use libc::{c_int, tcsetattr, termios, ECHO, ECHONL, TCSANOW};
+    use rtoolbox::safe_string::SafeString;
     use std::io::{self, BufRead};
     use std::mem;
     use std::os::unix::io::AsRawFd;
@@ -113,7 +120,7 @@ mod unix {
     }
 
     /// Reads a password from the TTY
-    pub fn read_password() -> std::io::Result<String> {
+    pub fn read_password() -> std::io::Result<SafeString> {
         let tty = std::fs::File::open("/dev/tty")?;
         let fd = tty.as_raw_fd();
         let mut reader = io::BufReader::new(tty);
@@ -125,7 +132,7 @@ mod unix {
     fn read_password_from_fd_with_hidden_input(
         reader: &mut impl BufRead,
         fd: i32,
-    ) -> std::io::Result<String> {
+    ) -> std::io::Result<SafeString> {
         let mut password = super::SafeString::new();
 
         let hidden_input = HiddenInput::new(fd)?;
@@ -134,14 +141,16 @@ mod unix {
 
         std::mem::drop(hidden_input);
 
-        super::fix_line_issues(password.into_inner())
+        super::sanitize_password(&mut password)?;
+        Ok(password)
     }
 }
 
 #[cfg(target_family = "windows")]
 mod windows {
-    use std::io::{self, BufReader};
+    use rtoolbox::safe_string::SafeString;
     use std::io::BufRead;
+    use std::io::{self, BufReader};
     use std::os::windows::io::FromRawHandle;
     use winapi::shared::minwindef::LPDWORD;
     use winapi::um::consoleapi::{GetConsoleMode, SetConsoleMode};
@@ -186,7 +195,7 @@ mod windows {
     }
 
     /// Reads a password from the TTY
-    pub fn read_password() -> std::io::Result<String> {
+    pub fn read_password() -> std::io::Result<SafeString> {
         let handle = unsafe {
             CreateFileA(
                 b"CONIN$\x00".as_ptr() as *const i8,
@@ -211,7 +220,7 @@ mod windows {
     fn read_password_from_handle_with_hidden_input(
         reader: &mut impl BufRead,
         handle: HANDLE,
-    ) -> io::Result<String> {
+    ) -> io::Result<SafeString> {
         let mut password = super::SafeString::new();
 
         let hidden_input = HiddenInput::new(handle)?;
@@ -227,23 +236,23 @@ mod windows {
 
         std::mem::drop(hidden_input);
 
-        super::fix_line_issues(password.into_inner())
+        super::sanitize_password(&mut password)?;
+        Ok(password)
     }
 }
 
 #[cfg(target_family = "unix")]
 pub use unix::read_password;
-#[cfg(target_family = "wasm")]
-pub use wasm::read_password;
 #[cfg(target_family = "windows")]
 pub use windows::read_password;
 
 /// Reads a password from anything that implements BufRead
-pub fn read_password_from_bufread(reader: &mut impl BufRead) -> std::io::Result<String> {
+pub fn read_password_from_bufread(reader: &mut impl BufRead) -> std::io::Result<SafeString> {
     let mut password = SafeString::new();
     reader.read_line(&mut password)?;
 
-    fix_line_issues(password.into_inner())
+    sanitize_password(&mut password)?;
+    Ok(password)
 }
 
 /// Prompts on the TTY and then reads a password from anything that implements BufRead
@@ -251,13 +260,13 @@ pub fn prompt_password_from_bufread(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
     prompt: impl ToString,
-) -> std::io::Result<String> {
+) -> std::io::Result<SafeString> {
     print_writer(writer, prompt.to_string().as_str())
         .and_then(|_| read_password_from_bufread(reader))
 }
 
 /// Prompts on the TTY and then reads a password from TTY
-pub fn prompt_password(prompt: impl ToString) -> std::io::Result<String> {
+pub fn prompt_password(prompt: impl ToString) -> std::io::Result<SafeString> {
     print_tty(prompt.to_string().as_str()).and_then(|_| read_password())
 }
 
@@ -278,14 +287,14 @@ mod tests {
         let mut reader_crlf = mock_input_crlf();
 
         let response = super::read_password_from_bufread(&mut reader_crlf).unwrap();
-        assert_eq!(response, "A mocked response.");
+        assert_eq!(response, "A mocked response.".into());
         let response = super::read_password_from_bufread(&mut reader_crlf).unwrap();
-        assert_eq!(response, "Another mocked response.");
+        assert_eq!(response, "Another mocked response.".into());
 
         let mut reader_lf = mock_input_lf();
         let response = super::read_password_from_bufread(&mut reader_lf).unwrap();
-        assert_eq!(response, "A mocked response.");
+        assert_eq!(response, "A mocked response.".into());
         let response = super::read_password_from_bufread(&mut reader_lf).unwrap();
-        assert_eq!(response, "Another mocked response.");
+        assert_eq!(response, "Another mocked response.".into());
     }
 }
